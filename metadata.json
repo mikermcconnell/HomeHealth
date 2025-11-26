@@ -1,0 +1,7 @@
+{
+  "name": "HomeHealth",
+  "description": "A gamified household maintenance management application to track assets, schedule tasks, and maintain a high Home Health Score.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
