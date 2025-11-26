@@ -50,5 +50,6 @@ export interface ImprovementProject {
 export interface UserState {
   isOnboarded: boolean;
   homeType: HomeType | null;
+  location?: string;
   score: number;
 }

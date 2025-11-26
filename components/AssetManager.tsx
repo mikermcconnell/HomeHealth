@@ -1,7 +1,7 @@
 
 import React, { useState, useRef } from 'react';
 import { Asset, AssetCategory, Task } from '../types';
-import { Plus, Camera, FileText, Trash2, Check, Loader2, Sparkles, ExternalLink, ListChecks, ScanLine, PlusCircle } from 'lucide-react';
+import { Plus, Camera, FileText, Trash2, Loader2, Sparkles, ExternalLink, ListChecks, ScanLine, PlusCircle, PenTool, X, CheckSquare, Calendar, HelpCircle } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
 interface AssetManagerProps {
@@ -9,13 +9,21 @@ interface AssetManagerProps {
   onAddAsset: (asset: Asset) => void;
   onAddTasks: (tasks: Task[]) => void;
   onDeleteAsset: (id: string) => void;
+  userLocation?: string;
 }
 
-const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTasks, onDeleteAsset }) => {
+const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTasks, onDeleteAsset, userLocation }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStage, setScanStage] = useState<string>('');
   
+  // Feature / Amenity Modal State
+  const [showFeatureModal, setShowFeatureModal] = useState(false);
+  const [featureInput, setFeatureInput] = useState('');
+  const [isGeneratingFeature, setIsGeneratingFeature] = useState(false);
+  const [featureProposals, setFeatureProposals] = useState<Partial<Task>[]>([]);
+  const [selectedProposals, setSelectedProposals] = useState<Record<number, boolean>>({});
+
   // Form State
   const [category, setCategory] = useState<AssetCategory>(AssetCategory.FRIDGE);
   const [brand, setBrand] = useState('');
@@ -98,7 +106,9 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
       
       try {
           const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-          const prompt = `For the ${searchBrand} ${searchModel} ${category}, find the official user manual and a maintenance schedule. 
+          const prompt = `For the ${searchBrand} ${searchModel} ${category}, find the official user manual and a maintenance schedule.
+          
+          Context: The user is located in "${userLocation || 'General North America'}". If this is an outdoor appliance (like HVAC, BBQ), ensure tasks and frequencies respect the local climate (e.g., winterization).
           
           1. Try to find a direct URL to the PDF manual or support page.
           2. List 3-5 key maintenance tasks recommended for this specific appliance.
@@ -233,21 +243,242 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
     setManualTaskTitle('');
   };
 
+  // --- Feature / Amenity Logic ---
+  const handleGenerateFeatureTasks = async () => {
+      if (!featureInput.trim()) return;
+      setIsGeneratingFeature(true);
+      setFeatureProposals([]);
+
+      try {
+          const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+          const prompt = `
+            The user has a home feature: "${featureInput}".
+            The user is located in "${userLocation || 'General North America'}".
+            Today's date is ${new Date().toDateString()}.
+
+            Generate a list of 3-6 recommended maintenance tasks for this feature.
+            
+            CRITICAL SEASONAL INSTRUCTION: 
+            - Analyze the user's location and current date to determine the season.
+            - If it is Winter in a cold climate and the feature is outdoors (like a Pond, Pool, BBQ), DO NOT suggest summer tasks (e.g. "Monitor Algae", "Mow Lawn"). Instead, suggest winter tasks (e.g. "Ensure pump is off", "Check winter cover", "Clear snow") or preparation for Spring.
+            - If it is Spring, prioritize opening and cleaning tasks.
+            
+            Return a JSON array of objects with these fields:
+            - title: string
+            - description: string (what to do)
+            - importance: string (why it matters)
+            - frequencyDays: number (how often in days, roughly. e.g. 7 for weekly, 30 for monthly, 365 for yearly)
+            - priority: "HIGH" | "MEDIUM" | "LOW"
+          `;
+
+          const response = await ai.models.generateContent({
+              model: 'gemini-2.5-flash',
+              contents: prompt,
+              config: { responseMimeType: 'application/json' }
+          });
+          
+          const data = JSON.parse(response.text || '[]');
+          
+          const proposals: Partial<Task>[] = data.map((item: any) => {
+             // Calculate approximate first due date based on frequency
+             const daysToAdd = Math.max(1, Math.round(item.frequencyDays / 2)); // Start halfway through cycle? Or just next week for recurring?
+             // Let's just set it to 'soon' but staggered.
+             const dueDate = new Date(Date.now() + daysToAdd * 86400000).toISOString();
+
+             return {
+                 title: item.title,
+                 description: item.description,
+                 importance: item.importance,
+                 priority: item.priority,
+                 dueDate: dueDate,
+                 recurring: true // Default to recurring for features
+             };
+          });
+
+          setFeatureProposals(proposals);
+          // Select all by default
+          const sel: Record<number, boolean> = {};
+          proposals.forEach((_, i) => sel[i] = true);
+          setSelectedProposals(sel);
+
+      } catch (error) {
+          console.error("Feature Gen Error", error);
+      } finally {
+          setIsGeneratingFeature(false);
+      }
+  };
+
+  const saveFeatureAndTasks = () => {
+      const assetId = `feature-${Date.now()}`;
+      
+      // Create a "Virtual" Asset for the feature
+      const newAsset: Asset = {
+          id: assetId,
+          name: featureInput,
+          category: AssetCategory.OTHER,
+          brand: 'Custom Feature',
+          model: '',
+      };
+      
+      onAddAsset(newAsset);
+
+      const tasksToAdd = featureProposals
+        .filter((_, idx) => selectedProposals[idx])
+        .map((t, idx) => ({
+            ...t,
+            id: `${assetId}-task-${idx}`,
+            assetId: assetId,
+            status: 'PENDING' as const
+        } as Task));
+
+      if (tasksToAdd.length > 0) {
+          onAddTasks(tasksToAdd);
+      }
+
+      // Close and reset
+      setShowFeatureModal(false);
+      setFeatureInput('');
+      setFeatureProposals([]);
+  };
+
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
       <div className="flex justify-between items-center mb-6">
         <div>
-            <h2 className="text-xl font-bold text-gray-800">Digital Fridge</h2>
-            <p className="text-xs text-gray-500">Manage your appliances & manuals</p>
+            <h2 className="text-xl font-bold text-gray-800">My Assets</h2>
+            <p className="text-xs text-gray-500">Manage appliances & home features</p>
         </div>
-        <button 
-          onClick={() => setIsAdding(!isAdding)}
-          className="bg-gray-900 text-white p-2 rounded-full hover:bg-gray-700 transition"
-        >
-          {isAdding ? <Trash2 size={20} /> : <Plus size={20} />}
-        </button>
+        <div className="flex space-x-2">
+            <button 
+                onClick={() => setShowFeatureModal(true)}
+                className="bg-indigo-50 text-indigo-600 p-2 rounded-full hover:bg-indigo-100 transition border border-indigo-200"
+                title="Add Feature (Pool, BBQ, etc)"
+            >
+                <PenTool size={20} />
+            </button>
+            <button 
+                onClick={() => setIsAdding(!isAdding)}
+                className="bg-gray-900 text-white p-2 rounded-full hover:bg-gray-700 transition"
+                title="Add Appliance"
+            >
+                {isAdding ? <X size={20} /> : <Plus size={20} />}
+            </button>
+        </div>
       </div>
 
+      {/* Feature / Amenity Modal */}
+      {showFeatureModal && (
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95">
+                  <div className="p-6 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-100">
+                      <div className="flex justify-between items-start">
+                          <div>
+                              <h3 className="text-xl font-bold text-indigo-900">Add Home Feature</h3>
+                              <p className="text-sm text-indigo-600">Enter a feature (e.g., Hot Tub, Koi Pond) to get a custom maintenance plan.</p>
+                          </div>
+                          <button onClick={() => setShowFeatureModal(false)} className="text-gray-400 hover:text-gray-600">
+                              <X size={24} />
+                          </button>
+                      </div>
+                      
+                      <div className="mt-4 flex gap-2">
+                          <input 
+                              autoFocus
+                              value={featureInput}
+                              onChange={(e) => setFeatureInput(e.target.value)}
+                              placeholder="e.g. Saltwater Pool, Gas BBQ, Cedar Deck..."
+                              className="flex-1 border border-indigo-200 rounded-lg px-4 py-2 focus:ring-2 focus:ring-indigo-500 outline-none shadow-sm"
+                              onKeyDown={(e) => e.key === 'Enter' && handleGenerateFeatureTasks()}
+                          />
+                          <button 
+                              onClick={handleGenerateFeatureTasks}
+                              disabled={isGeneratingFeature || !featureInput.trim()}
+                              className="bg-indigo-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 transition flex items-center"
+                          >
+                              {isGeneratingFeature ? <Loader2 className="animate-spin" /> : <Sparkles size={18} />}
+                          </button>
+                      </div>
+                  </div>
+
+                  <div className="p-6 max-h-[60vh] overflow-y-auto">
+                      {isGeneratingFeature && (
+                          <div className="flex flex-col items-center justify-center py-8 text-gray-500">
+                              <Loader2 size={32} className="animate-spin text-indigo-500 mb-2" />
+                              <p className="text-sm">Consulting AI for maintenance best practices...</p>
+                          </div>
+                      )}
+
+                      {!isGeneratingFeature && featureProposals.length > 0 && (
+                          <div className="space-y-4">
+                              <div className="flex items-center justify-between text-sm text-gray-500 border-b pb-2">
+                                  <span>Review Recommended Tasks</span>
+                                  <span className="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded-full">{featureProposals.length} Found</span>
+                              </div>
+                              {featureProposals.map((task, idx) => (
+                                  <div key={idx} className={`p-3 rounded-lg border transition ${selectedProposals[idx] ? 'bg-indigo-50 border-indigo-200' : 'bg-white border-gray-100 hover:border-gray-200'}`}>
+                                      <div className="flex items-start gap-3">
+                                          <div className="pt-0.5">
+                                              <input 
+                                                  type="checkbox"
+                                                  checked={!!selectedProposals[idx]}
+                                                  onChange={() => setSelectedProposals(prev => ({...prev, [idx]: !prev[idx]}))}
+                                                  className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500 border-gray-300"
+                                              />
+                                          </div>
+                                          <div className="flex-1">
+                                              <div className="flex justify-between items-start">
+                                                  <h4 className="font-bold text-gray-800 text-sm">{task.title}</h4>
+                                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${task.priority === 'HIGH' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                                                      {task.priority}
+                                                  </span>
+                                              </div>
+                                              <p className="text-xs text-gray-600 mt-1">{task.description}</p>
+                                              {task.importance && (
+                                                  <div className="mt-2 text-xs text-indigo-700 bg-indigo-50/50 p-1.5 rounded flex items-start">
+                                                      <HelpCircle size={12} className="mr-1 mt-0.5 flex-shrink-0 opacity-70" />
+                                                      {task.importance}
+                                                  </div>
+                                              )}
+                                              <div className="mt-2 flex items-center text-[10px] text-gray-400">
+                                                  <Calendar size={12} className="mr-1" />
+                                                  Est. First Due: {new Date(task.dueDate || '').toLocaleDateString()}
+                                              </div>
+                                          </div>
+                                      </div>
+                                  </div>
+                              ))}
+                          </div>
+                      )}
+                      
+                      {!isGeneratingFeature && featureProposals.length === 0 && !featureInput && (
+                          <div className="text-center py-8 text-gray-400">
+                              <Sparkles size={48} className="mx-auto mb-2 opacity-20" />
+                              <p className="text-sm">Enter a feature above to get started.</p>
+                          </div>
+                      )}
+                  </div>
+
+                  {featureProposals.length > 0 && (
+                      <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end gap-3">
+                          <button 
+                              onClick={() => setShowFeatureModal(false)}
+                              className="px-4 py-2 text-sm font-medium text-gray-600 hover:text-gray-800"
+                          >
+                              Cancel
+                          </button>
+                          <button 
+                              onClick={saveFeatureAndTasks}
+                              className="px-6 py-2 bg-indigo-600 text-white rounded-lg text-sm font-bold hover:bg-indigo-700 shadow-md transition"
+                          >
+                              Add {Object.values(selectedProposals).filter(Boolean).length} Tasks
+                          </button>
+                      </div>
+                  )}
+              </div>
+          </div>
+      )}
+
+      {/* Existing Add Appliance Form */}
       {isAdding && (
         <form onSubmit={handleSubmit} className="mb-8 bg-white rounded-lg animate-in fade-in slide-in-from-top-4 duration-300">
           <div className="grid grid-cols-1 gap-4">
@@ -455,16 +686,16 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
           <div key={asset.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition relative group bg-white">
             <div className="flex items-start justify-between">
               <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 overflow-hidden border border-gray-100">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center text-gray-500 overflow-hidden border border-gray-100 ${asset.category === AssetCategory.OTHER ? 'bg-indigo-50 text-indigo-500' : 'bg-gray-100'}`}>
                    {asset.image ? (
                      <img src={asset.image} alt="asset" className="w-full h-full object-cover" />
                    ) : (
-                     <span className="font-bold text-xs">{asset.brand.substring(0, 2).toUpperCase()}</span>
+                     <span className="font-bold text-xs">{asset.brand === 'Custom Feature' ? 'F' : asset.brand.substring(0, 2).toUpperCase()}</span>
                    )}
                 </div>
                 <div>
-                  <h3 className="font-semibold text-gray-800 text-sm">{asset.category}</h3>
-                  <p className="text-xs text-gray-500">{asset.brand} {asset.model}</p>
+                  <h3 className="font-semibold text-gray-800 text-sm">{asset.category === AssetCategory.OTHER ? asset.name : asset.category}</h3>
+                  <p className="text-xs text-gray-500">{asset.brand === 'Custom Feature' ? 'Custom Feature' : `${asset.brand} ${asset.model}`}</p>
                 </div>
               </div>
               <button onClick={() => onDeleteAsset(asset.id)} className="text-gray-300 hover:text-red-500 transition">

@@ -9,9 +9,10 @@ interface HomeImprovementProps {
   onAddProject: (project: ImprovementProject) => void;
   onUpdateProject: (project: ImprovementProject) => void;
   onDeleteProject: (id: string) => void;
+  userLocation?: string;
 }
 
-const HomeImprovement: React.FC<HomeImprovementProps> = ({ projects, onAddProject, onUpdateProject, onDeleteProject }) => {
+const HomeImprovement: React.FC<HomeImprovementProps> = ({ projects, onAddProject, onUpdateProject, onDeleteProject, userLocation }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [isBrainstorming, setIsBrainstorming] = useState(false);
   
@@ -32,6 +33,10 @@ const HomeImprovement: React.FC<HomeImprovementProps> = ({ projects, onAddProjec
     try {
         const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
         const prompt = `Suggest 3 home improvement projects for a "${brainstormPrompt}". 
+        
+        The user is located in "${userLocation || 'General North America'}".
+        Consider the local climate and seasonality when suggesting projects, especially for exterior upgrades.
+        
         For each project, provide a title, a short description, an estimated cost (number only), and a category (AESTHETIC, FUNCTIONAL, ENERGY_SAVING, or SMART_HOME).
         
         Return pure JSON array like:

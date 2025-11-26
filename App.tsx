@@ -7,14 +7,19 @@ import AssetManager from './components/AssetManager';
 import TaskScheduler from './components/TaskScheduler';
 import CalendarView from './components/CalendarView';
 import HomeImprovement from './components/HomeImprovement';
-import { Home, Building, ShieldCheck, LayoutDashboard, Calendar as CalendarIcon, TrendingUp } from 'lucide-react';
+import { Home, Building, ShieldCheck, LayoutDashboard, Calendar as CalendarIcon, TrendingUp, MapPin, Loader2 } from 'lucide-react';
+import { GoogleGenAI } from "@google/genai";
 
 const App: React.FC = () => {
   const [userState, setUserState] = useState<UserState>({
     isOnboarded: false,
     homeType: null,
+    location: '',
     score: 100
   });
+
+  const [locationInput, setLocationInput] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
 
   const [assets, setAssets] = useState<Asset[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -29,7 +34,11 @@ const App: React.FC = () => {
     const savedTasks = localStorage.getItem('hh_tasks');
     const savedImprovements = localStorage.getItem('hh_improvements');
 
-    if (savedUser) setUserState(JSON.parse(savedUser));
+    if (savedUser) {
+        const parsedUser = JSON.parse(savedUser);
+        setUserState(parsedUser);
+        if (parsedUser.location) setLocationInput(parsedUser.location);
+    }
     if (savedAssets) setAssets(JSON.parse(savedAssets));
     if (savedTasks) setTasks(JSON.parse(savedTasks));
     if (savedImprovements) setImprovements(JSON.parse(savedImprovements));
@@ -91,7 +100,7 @@ const App: React.FC = () => {
 
   // --- INTELLIGENT SCHEDULING LOGIC ---
 
-  const distributeTasksOverTime = (newTasks: Partial<Task>[], startIdIndex: number = 0): Task[] => {
+  const distributeTasksFallback = (newTasks: Partial<Task>[], startIdIndex: number = 0): Task[] => {
     const now = new Date();
     let generalTaskDelayWeeks = 2; // Start general tasks 2 weeks out
     
@@ -102,7 +111,7 @@ const App: React.FC = () => {
       if (t.title?.toLowerCase().includes('smoke') || t.priority === 'HIGH' && !t.season) {
          dueDate.setDate(now.getDate() + 3); // Due in 3 days
       } 
-      // 2. Seasonal Logic (Align to next occurrence)
+      // 2. Seasonal Logic (Simple Fallback)
       else if (t.season) {
          const currentYear = now.getFullYear();
          let targetMonth = 0; // 0-11
@@ -111,23 +120,15 @@ const App: React.FC = () => {
          if (t.season === 'Late Spring') targetMonth = 4; // May
          if (t.season === 'Late Fall') targetMonth = 9; // Oct
 
-         // Set to this year
          dueDate = new Date(currentYear, targetMonth, targetDay);
-
-         // If we've already passed this date significantly (e.g., it's Dec and task is Oct), push to next year
-         // Allow a 30 day grace period where we might still want to do it this year
          if (now.getTime() > dueDate.getTime() + (30 * 86400000)) {
             dueDate.setFullYear(currentYear + 1);
          }
-         // If we are currently IN the season (e.g., it's Oct 1st and task is Oct 15th), keep it close
       } 
-      // 3. General Maintenance (Staggered "One-per-Weekend" Ramp Up)
+      // 3. General Maintenance
       else {
-         // Add weeks sequentially based on index to spread load
          const weeksToAdd = generalTaskDelayWeeks + index;
          dueDate.setDate(now.getDate() + (weeksToAdd * 7));
-         
-         // Ensure it lands on a Saturday (just for UX niceness)
          const day = dueDate.getDay(); 
          const daysUntilSaturday = (6 - day + 7) % 7;
          dueDate.setDate(dueDate.getDate() + daysUntilSaturday);
@@ -138,7 +139,6 @@ const App: React.FC = () => {
         id: t.id || `task-${Date.now()}-${startIdIndex + index}`,
         status: 'PENDING',
         dueDate: dueDate.toISOString(),
-        // Keep priority/description etc
         title: t.title || 'Untitled Task',
         description: t.description || '',
         priority: t.priority || 'MEDIUM'
@@ -146,21 +146,99 @@ const App: React.FC = () => {
     });
   };
 
-  const handleOnboarding = (type: HomeType) => {
-    const rawTasks = type === 'CONDO' ? DEFAULT_TASKS_CONDO : DEFAULT_TASKS_HOUSE;
-    const processedTasks = distributeTasksOverTime(rawTasks);
+  const generateSmartSchedule = async (location: string, type: HomeType, rawTasks: Partial<Task>[]): Promise<Task[]> => {
+      try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const now = new Date();
+        
+        const prompt = `
+          I am a homeowner in ${location}. 
+          It is currently ${now.toDateString()}. 
+          I have a ${type === 'CONDO' ? 'Condo/Apartment' : 'Single Family House'}.
+          
+          Here is a list of standard maintenance tasks:
+          ${JSON.stringify(rawTasks.map(t => ({ title: t.title, season: t.season, priority: t.priority })))}
 
-    setTasks(processedTasks);
-    // Add some default improvements
+          Please assign a specific 'dueDate' (ISO 8601 string) to each task based on my location's likely weather and seasons.
+          
+          Rules:
+          1. Hazardous outdoor tasks (Roof, Gutters, Hose Bibs) MUST NOT be scheduled in winter months if my location (${location}) has snow/ice. Move them to late Spring.
+          2. Spread out non-urgent indoor tasks so I don't have too many in one week. Start scheduling them 2 weeks from now.
+          3. High priority safety tasks (Smoke Alarms) should be due very soon (within 1 week).
+          4. "Late Fall" tasks should be scheduled before the first freeze in my location.
+          
+          Return a JSON array of objects. Each object must have:
+          - "title": matches the input title
+          - "dueDate": the calculated ISO date string
+        `;
+
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash',
+            contents: prompt,
+            config: { responseMimeType: 'application/json' }
+        });
+
+        const text = response.text;
+        if (!text) throw new Error("No response from AI");
+
+        const scheduledItems: { title: string, dueDate: string }[] = JSON.parse(text);
+
+        // Merge AI dates with full task objects
+        return rawTasks.map((t, index) => {
+            const aiItem = scheduledItems.find(i => i.title === t.title);
+            let finalDate = aiItem?.dueDate;
+
+            // Fallback if AI missed a date or returned invalid
+            if (!finalDate || isNaN(new Date(finalDate).getTime())) {
+                const fallback = distributeTasksFallback([t], index);
+                finalDate = fallback[0].dueDate;
+            }
+
+            return {
+                ...t,
+                id: `task-${Date.now()}-${index}`,
+                status: 'PENDING',
+                dueDate: finalDate,
+                title: t.title || 'Untitled',
+                description: t.description || '',
+                priority: t.priority || 'MEDIUM'
+            } as Task;
+        });
+
+      } catch (error) {
+          console.error("AI Scheduling Failed, using fallback", error);
+          return distributeTasksFallback(rawTasks);
+      }
+  };
+
+  const handleOnboarding = async (type: HomeType) => {
+    if (!locationInput.trim()) {
+        alert("Please enter your location so we can customize your schedule.");
+        return;
+    }
+
+    setIsProcessing(true);
+    
+    // Add default improvements
     setImprovements([
         { id: 'imp-1', title: 'Install Smart Thermostat', description: 'Replace old dial with Ecobee/Nest for energy savings', estimatedCost: 200, category: 'SMART_HOME', priority: 'MEDIUM', status: 'PLANNED' },
         { id: 'imp-2', title: 'LED Lighting Upgrade', description: 'Replace all recessed bulbs with warm LEDs', estimatedCost: 100, category: 'ENERGY_SAVING', priority: 'MEDIUM', status: 'PLANNED' }
     ]);
+
+    const rawTasks = type === 'CONDO' ? DEFAULT_TASKS_CONDO : DEFAULT_TASKS_HOUSE;
+    
+    // Use AI to schedule
+    const processedTasks = await generateSmartSchedule(locationInput, type, rawTasks);
+
+    setTasks(processedTasks);
     setUserState({
       isOnboarded: true,
       homeType: type,
+      location: locationInput,
       score: 100
     });
+    
+    setIsProcessing(false);
   };
 
   const handleAddAsset = (asset: Asset) => {
@@ -174,7 +252,9 @@ const App: React.FC = () => {
         assetId: asset.id
       }));
       
-      const processedTasks = distributeTasksOverTime(rawTasks, tasks.length);
+      // For single assets added later, we just use the fallback logic for speed
+      // unless we wanted to call AI again, but that might be overkill for 1-2 tasks
+      const processedTasks = distributeTasksFallback(rawTasks, tasks.length);
       
       setTasks(prev => [...prev, ...processedTasks]);
     }
@@ -191,6 +271,18 @@ const App: React.FC = () => {
 
   const handleCompleteTask = (id: string) => {
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status: 'COMPLETED' } : t));
+  };
+  
+  const handleUpdateTask = (updatedTask: Task) => {
+    setTasks(prev => prev.map(t => t.id === updatedTask.id ? updatedTask : t));
+  };
+
+  const handleDeleteTask = (id: string) => {
+    setTasks(prev => prev.filter(t => t.id !== id));
+  };
+
+  const handleDeleteAllTasks = () => {
+    setTasks([]);
   };
   
   // Improvement Handlers
@@ -211,33 +303,63 @@ const App: React.FC = () => {
     return (
       <div className="min-h-screen bg-gradient-to-br from-emerald-50 to-sky-50 flex items-center justify-center p-4">
         <div className="max-w-2xl w-full bg-white rounded-2xl shadow-xl overflow-hidden p-8 text-center">
-          <div className="mb-8 flex justify-center">
+          <div className="mb-6 flex justify-center">
             <div className="bg-emerald-100 p-4 rounded-full">
               <ShieldCheck size={48} className="text-primary" />
             </div>
           </div>
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Welcome to HomeHealth</h1>
-          <p className="text-gray-500 mb-10">Select your home type to generate a personalized, balanced maintenance plan.</p>
+          <p className="text-gray-500 mb-8">Let's build a personalized maintenance plan for your home.</p>
           
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <button 
-              onClick={() => handleOnboarding('CONDO')}
-              className="group p-6 border-2 border-gray-100 rounded-xl hover:border-primary hover:bg-emerald-50 transition flex flex-col items-center"
-            >
-              <Building size={48} className="text-gray-400 group-hover:text-primary mb-4 transition" />
-              <h3 className="text-xl font-bold text-gray-800">Condo / Apt</h3>
-              <p className="text-sm text-gray-400 mt-2">Internal systems only</p>
-            </button>
-            
-            <button 
-              onClick={() => handleOnboarding('HOUSE')}
-              className="group p-6 border-2 border-gray-100 rounded-xl hover:border-secondary hover:bg-sky-50 transition flex flex-col items-center"
-            >
-              <Home size={48} className="text-gray-400 group-hover:text-secondary mb-4 transition" />
-              <h3 className="text-xl font-bold text-gray-800">Single Family</h3>
-              <p className="text-sm text-gray-400 mt-2">Roof, gutters & yard</p>
-            </button>
+          <div className="mb-8 max-w-sm mx-auto">
+              <label className="block text-left text-sm font-bold text-gray-700 mb-2 flex items-center">
+                  <MapPin size={16} className="mr-1 text-primary" /> Where do you live?
+              </label>
+              <input 
+                  type="text" 
+                  value={locationInput}
+                  onChange={(e) => setLocationInput(e.target.value)}
+                  placeholder="e.g. Barrie, Ontario"
+                  className="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-emerald-500 outline-none transition"
+                  disabled={isProcessing}
+              />
+              <p className="text-xs text-gray-400 mt-2 text-left">We use this to adjust tasks for your local climate (e.g. snow, humidity).</p>
           </div>
+
+          {isProcessing ? (
+              <div className="py-10 flex flex-col items-center justify-center space-y-4">
+                  <Loader2 size={48} className="text-primary animate-spin" />
+                  <p className="text-gray-600 font-medium animate-pulse">
+                      Analyzing local weather patterns for {locationInput}...
+                  </p>
+                  <p className="text-xs text-gray-400">Scheduling safe times for roof & gutter work.</p>
+              </div>
+          ) : (
+            <>
+                <p className="text-sm font-bold text-gray-700 mb-4 uppercase tracking-wide">Select your home type</p>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <button 
+                    onClick={() => handleOnboarding('CONDO')}
+                    className="group p-6 border-2 border-gray-100 rounded-xl hover:border-primary hover:bg-emerald-50 transition flex flex-col items-center disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!locationInput}
+                    >
+                    <Building size={48} className="text-gray-400 group-hover:text-primary mb-4 transition" />
+                    <h3 className="text-xl font-bold text-gray-800">Condo / Apt</h3>
+                    <p className="text-sm text-gray-400 mt-2">Internal systems only</p>
+                    </button>
+                    
+                    <button 
+                    onClick={() => handleOnboarding('HOUSE')}
+                    className="group p-6 border-2 border-gray-100 rounded-xl hover:border-secondary hover:bg-sky-50 transition flex flex-col items-center disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={!locationInput}
+                    >
+                    <Home size={48} className="text-gray-400 group-hover:text-secondary mb-4 transition" />
+                    <h3 className="text-xl font-bold text-gray-800">Single Family</h3>
+                    <p className="text-sm text-gray-400 mt-2">Roof, gutters & yard</p>
+                    </button>
+                </div>
+            </>
+          )}
         </div>
       </div>
     );
@@ -279,8 +401,9 @@ const App: React.FC = () => {
             </button>
           </div>
 
-          <div className="text-sm text-gray-500 hidden sm:block">
-            {userState.homeType === 'HOUSE' ? 'Single Family Home' : 'Condo/Apartment'}
+          <div className="text-sm text-gray-500 hidden sm:block flex flex-col items-end">
+             <span>{userState.homeType === 'HOUSE' ? 'Single Family Home' : 'Condo/Apartment'}</span>
+             <span className="text-xs text-gray-400 flex items-center"><MapPin size={10} className="mr-1" /> {userState.location}</span>
           </div>
         </div>
       </header>
@@ -335,7 +458,13 @@ const App: React.FC = () => {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 animate-in fade-in duration-300">
             {/* Main Content: Tasks */}
             <div className="lg:col-span-2 space-y-8">
-              <TaskScheduler tasks={tasks} onCompleteTask={handleCompleteTask} />
+              <TaskScheduler 
+                tasks={tasks} 
+                onCompleteTask={handleCompleteTask} 
+                onUpdateTask={handleUpdateTask}
+                onDeleteTask={handleDeleteTask}
+                onDeleteAllTasks={handleDeleteAllTasks}
+              />
             </div>
 
             {/* Sidebar: Assets */}
@@ -346,6 +475,7 @@ const App: React.FC = () => {
                    onAddAsset={handleAddAsset} 
                    onAddTasks={handleAddTasks}
                    onDeleteAsset={handleDeleteAsset} 
+                   userLocation={userState.location}
                  />
                </div>
             </div>
@@ -361,6 +491,7 @@ const App: React.FC = () => {
                 onAddProject={handleAddProject}
                 onUpdateProject={handleUpdateProject}
                 onDeleteProject={handleDeleteProject}
+                userLocation={userState.location}
             />
           </div>
         )}
