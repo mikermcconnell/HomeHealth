@@ -1,18 +1,19 @@
 
 import React, { useState, useRef } from 'react';
-import { Asset, AssetCategory, Task } from '../types';
-import { Plus, Camera, FileText, Trash2, Loader2, Sparkles, ExternalLink, ListChecks, ScanLine, PlusCircle, PenTool, X, CheckSquare, Calendar, HelpCircle } from 'lucide-react';
+import { Asset, AssetCategory, Task, TaskCategory } from '../types';
+import { Plus, Camera, FileText, Trash2, Loader2, Sparkles, ExternalLink, ListChecks, ScanLine, PlusCircle, PenTool, X, CheckSquare, Calendar, HelpCircle, DollarSign, Calculator, Info, History } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
 interface AssetManagerProps {
   assets: Asset[];
+  tasks: Task[]; // Received for history
   onAddAsset: (asset: Asset) => void;
   onAddTasks: (tasks: Task[]) => void;
   onDeleteAsset: (id: string) => void;
   userLocation?: string;
 }
 
-const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTasks, onDeleteAsset, userLocation }) => {
+const AssetManager: React.FC<AssetManagerProps> = ({ assets, tasks, onAddAsset, onAddTasks, onDeleteAsset, userLocation }) => {
   const [isAdding, setIsAdding] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStage, setScanStage] = useState<string>('');
@@ -24,10 +25,14 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
   const [featureProposals, setFeatureProposals] = useState<Partial<Task>[]>([]);
   const [selectedProposals, setSelectedProposals] = useState<Record<number, boolean>>({});
 
+  // Asset Detail Modal State
+  const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+
   // Form State
   const [category, setCategory] = useState<AssetCategory>(AssetCategory.FRIDGE);
   const [brand, setBrand] = useState('');
   const [model, setModel] = useState('');
+  const [purchasePrice, setPurchasePrice] = useState<string>('');
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [manualName, setManualName] = useState<string | null>(null);
   const [detectedManualUrl, setDetectedManualUrl] = useState<string | null>(null);
@@ -40,6 +45,8 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
   const [manualTaskTitle, setManualTaskTitle] = useState('');
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const totalAssetValue = assets.reduce((sum, asset) => sum + (asset.purchasePrice || 0), 0);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -114,7 +121,9 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
           2. List 3-5 key maintenance tasks recommended for this specific appliance.
           
           Format the tasks strictly as a list where each line is: 
-          'TASK: [Task Title] | [Brief Description] | [Frequency]'
+          'TASK: [Task Title] | [Brief Description] | [Frequency] | [Category]'
+          
+          Valid categories: 'SAFETY', 'EXTERIOR', 'INTERIOR', 'SYSTEMS', 'APPLIANCE', 'PLUMBING', 'OUTDOOR', 'GENERAL'.
           
           Do not include any other conversational text.`;
 
@@ -150,7 +159,8 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
                          title: parts[0].trim(),
                          description: parts[1].trim(),
                          priority: 'MEDIUM',
-                         dueDate: new Date(Date.now() + 86400000 * 30).toISOString() // Default 30 days
+                         dueDate: new Date(Date.now() + 86400000 * 30).toISOString(), // Default 30 days
+                         category: (parts[3] ? parts[3].trim() as TaskCategory : 'GENERAL')
                      });
                  }
              }
@@ -186,7 +196,8 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
           title: manualTaskTitle,
           description: "Manually added maintenance task",
           priority: "MEDIUM",
-          dueDate: new Date(Date.now() + 86400000 * 30).toISOString()
+          dueDate: new Date(Date.now() + 86400000 * 30).toISOString(),
+          category: 'GENERAL'
       };
       
       setGeneratedTasks(prev => [...prev, newTask]);
@@ -207,6 +218,8 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
       image: imagePreview || undefined,
       manual: manualName || undefined,
       manualUrl: detectedManualUrl || undefined,
+      purchaseDate: new Date().toISOString(), // Add install date
+      purchasePrice: purchasePrice ? parseFloat(purchasePrice) : undefined
     };
     
     onAddAsset(newAsset);
@@ -220,7 +233,8 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
             assetId: assetId,
             status: 'PENDING' as const, // Force type
             priority: t.priority || 'MEDIUM',
-            dueDate: t.dueDate || new Date().toISOString()
+            dueDate: t.dueDate || new Date().toISOString(),
+            category: t.category || 'GENERAL'
         } as Task));
     
     if (tasksToAdd.length > 0) {
@@ -234,6 +248,7 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
     setCategory(AssetCategory.FRIDGE);
     setBrand('');
     setModel('');
+    setPurchasePrice('');
     setImagePreview(null);
     setManualName(null);
     setDetectedManualUrl(null);
@@ -261,7 +276,6 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
             CRITICAL SEASONAL INSTRUCTION: 
             - Analyze the user's location and current date to determine the season.
             - If it is Winter in a cold climate and the feature is outdoors (like a Pond, Pool, BBQ), DO NOT suggest summer tasks (e.g. "Monitor Algae", "Mow Lawn"). Instead, suggest winter tasks (e.g. "Ensure pump is off", "Check winter cover", "Clear snow") or preparation for Spring.
-            - If it is Spring, prioritize opening and cleaning tasks.
             
             Return a JSON array of objects with these fields:
             - title: string
@@ -269,6 +283,7 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
             - importance: string (why it matters)
             - frequencyDays: number (how often in days, roughly. e.g. 7 for weekly, 30 for monthly, 365 for yearly)
             - priority: "HIGH" | "MEDIUM" | "LOW"
+            - category: "SAFETY" | "EXTERIOR" | "INTERIOR" | "SYSTEMS" | "APPLIANCE" | "PLUMBING" | "OUTDOOR" | "GENERAL"
           `;
 
           const response = await ai.models.generateContent({
@@ -281,8 +296,7 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
           
           const proposals: Partial<Task>[] = data.map((item: any) => {
              // Calculate approximate first due date based on frequency
-             const daysToAdd = Math.max(1, Math.round(item.frequencyDays / 2)); // Start halfway through cycle? Or just next week for recurring?
-             // Let's just set it to 'soon' but staggered.
+             const daysToAdd = Math.max(1, Math.round(item.frequencyDays / 2));
              const dueDate = new Date(Date.now() + daysToAdd * 86400000).toISOString();
 
              return {
@@ -291,7 +305,8 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
                  importance: item.importance,
                  priority: item.priority,
                  dueDate: dueDate,
-                 recurring: true // Default to recurring for features
+                 recurring: true,
+                 category: item.category || 'GENERAL'
              };
           });
 
@@ -311,7 +326,6 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
   const saveFeatureAndTasks = () => {
       const assetId = `feature-${Date.now()}`;
       
-      // Create a "Virtual" Asset for the feature
       const newAsset: Asset = {
           id: assetId,
           name: featureInput,
@@ -335,10 +349,23 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
           onAddTasks(tasksToAdd);
       }
 
-      // Close and reset
       setShowFeatureModal(false);
       setFeatureInput('');
       setFeatureProposals([]);
+  };
+  
+  // -- Asset Detail Helpers --
+  const getAssetHistory = (assetId: string) => {
+      return tasks
+        .filter(t => t.assetId === assetId && t.status === 'COMPLETED')
+        .sort((a, b) => new Date(b.completedDate!).getTime() - new Date(a.completedDate!).getTime());
+  };
+
+  const getAssetLifetimeCost = (assetId: string) => {
+      const maintenance = tasks
+        .filter(t => t.assetId === assetId && t.actualCost)
+        .reduce((sum, t) => sum + (t.actualCost || 0), 0);
+      return maintenance;
   };
 
   return (
@@ -346,7 +373,14 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
       <div className="flex justify-between items-center mb-6">
         <div>
             <h2 className="text-xl font-bold text-gray-800">My Assets</h2>
-            <p className="text-xs text-gray-500">Manage appliances & home features</p>
+            <div className="flex items-center space-x-2 mt-1">
+                <p className="text-xs text-gray-500">Manage appliances & features</p>
+                {totalAssetValue > 0 && (
+                    <span className="text-xs bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full font-bold border border-emerald-100">
+                        ${totalAssetValue.toLocaleString()} Value
+                    </span>
+                )}
+            </div>
         </div>
         <div className="flex space-x-2">
             <button 
@@ -368,7 +402,7 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
 
       {/* Feature / Amenity Modal */}
       {showFeatureModal && (
-          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden animate-in fade-in zoom-in-95">
                   <div className="p-6 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-100">
                       <div className="flex justify-between items-start">
@@ -428,21 +462,14 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
                                           <div className="flex-1">
                                               <div className="flex justify-between items-start">
                                                   <h4 className="font-bold text-gray-800 text-sm">{task.title}</h4>
-                                                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${task.priority === 'HIGH' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
-                                                      {task.priority}
-                                                  </span>
+                                                  <div className="flex gap-1">
+                                                     {task.category && <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase bg-blue-50 text-blue-600 border border-blue-100">{task.category}</span>}
+                                                     <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${task.priority === 'HIGH' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                                                         {task.priority}
+                                                     </span>
+                                                  </div>
                                               </div>
                                               <p className="text-xs text-gray-600 mt-1">{task.description}</p>
-                                              {task.importance && (
-                                                  <div className="mt-2 text-xs text-indigo-700 bg-indigo-50/50 p-1.5 rounded flex items-start">
-                                                      <HelpCircle size={12} className="mr-1 mt-0.5 flex-shrink-0 opacity-70" />
-                                                      {task.importance}
-                                                  </div>
-                                              )}
-                                              <div className="mt-2 flex items-center text-[10px] text-gray-400">
-                                                  <Calendar size={12} className="mr-1" />
-                                                  Est. First Due: {new Date(task.dueDate || '').toLocaleDateString()}
-                                              </div>
                                           </div>
                                       </div>
                                   </div>
@@ -474,6 +501,119 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
                           </button>
                       </div>
                   )}
+              </div>
+          </div>
+      )}
+
+      {/* DETAILED ASSET VIEW MODAL */}
+      {selectedAsset && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[60] flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden animate-in fade-in zoom-in-95 flex flex-col max-h-[90vh]">
+                  
+                  {/* Header */}
+                  <div className="bg-gray-50 p-6 border-b border-gray-100 flex justify-between items-start">
+                      <div className="flex items-start space-x-4">
+                          <div className={`w-16 h-16 rounded-lg flex items-center justify-center text-gray-500 overflow-hidden border border-gray-200 bg-white shadow-sm flex-shrink-0`}>
+                              {selectedAsset.image ? (
+                                  <img src={selectedAsset.image} alt="asset" className="w-full h-full object-cover" />
+                              ) : (
+                                  <span className="font-bold text-xl">{selectedAsset.brand ? selectedAsset.brand.substring(0, 2).toUpperCase() : 'AS'}</span>
+                              )}
+                          </div>
+                          <div>
+                              <div className="flex items-center gap-2">
+                                <h2 className="text-2xl font-bold text-gray-900">{selectedAsset.category === AssetCategory.OTHER ? selectedAsset.name : selectedAsset.category}</h2>
+                                {selectedAsset.purchasePrice && (
+                                    <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-xs font-bold border border-emerald-200">
+                                        ${selectedAsset.purchasePrice.toLocaleString()} Value
+                                    </span>
+                                )}
+                              </div>
+                              <p className="text-gray-500 font-medium">{selectedAsset.brand} {selectedAsset.model}</p>
+                              <div className="flex items-center gap-2 mt-2">
+                                  {selectedAsset.manualUrl && (
+                                      <a href={selectedAsset.manualUrl} target="_blank" rel="noopener noreferrer" className="flex items-center text-xs text-blue-600 hover:underline">
+                                          <ExternalLink size={12} className="mr-1" /> View Manual
+                                      </a>
+                                  )}
+                                  {selectedAsset.purchaseDate && (
+                                      <span className="text-xs text-gray-400 flex items-center">
+                                          <Calendar size={12} className="mr-1" /> Installed: {new Date(selectedAsset.purchaseDate).toLocaleDateString()}
+                                      </span>
+                                  )}
+                              </div>
+                          </div>
+                      </div>
+                      <button onClick={() => setSelectedAsset(null)} className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-200 rounded-full transition">
+                          <X size={24} />
+                      </button>
+                  </div>
+
+                  {/* Body - Scrollable */}
+                  <div className="p-6 overflow-y-auto flex-1">
+                      
+                      {/* Financial Summary */}
+                      <div className="grid grid-cols-2 gap-4 mb-6">
+                          <div className="p-4 bg-slate-50 rounded-lg border border-slate-100">
+                              <p className="text-xs text-slate-500 uppercase font-bold tracking-wide mb-1">Lifetime Maintenance Cost</p>
+                              <p className="text-xl font-bold text-slate-900">${getAssetLifetimeCost(selectedAsset.id).toLocaleString()}</p>
+                          </div>
+                          <div className="p-4 bg-slate-50 rounded-lg border border-slate-100">
+                              <p className="text-xs text-slate-500 uppercase font-bold tracking-wide mb-1">Service Events</p>
+                              <p className="text-xl font-bold text-slate-900">{getAssetHistory(selectedAsset.id).length}</p>
+                          </div>
+                      </div>
+
+                      {/* Service Timeline */}
+                      <div>
+                          <h3 className="text-sm font-bold text-gray-900 uppercase tracking-wide mb-4 flex items-center">
+                              <History size={16} className="mr-2 text-gray-500" /> Service History
+                          </h3>
+                          
+                          <div className="space-y-0 relative border-l-2 border-gray-100 ml-2 pl-6 pb-2">
+                              {getAssetHistory(selectedAsset.id).map((task, idx) => (
+                                  <div key={idx} className="mb-6 relative">
+                                      <div className="absolute -left-[31px] top-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white shadow-sm"></div>
+                                      <div className="bg-white border border-gray-200 rounded-lg p-3 hover:shadow-sm transition">
+                                          <div className="flex justify-between items-start mb-1">
+                                              <span className="font-bold text-gray-800 text-sm">{task.title}</span>
+                                              <span className="text-xs text-gray-500 font-medium bg-gray-50 px-2 py-0.5 rounded">
+                                                  {new Date(task.completedDate!).toLocaleDateString()}
+                                              </span>
+                                          </div>
+                                          <p className="text-xs text-gray-600">{task.description}</p>
+                                          {task.actualCost !== undefined && task.actualCost > 0 && (
+                                              <div className="mt-2 text-xs font-bold text-slate-700 flex items-center">
+                                                  <DollarSign size={12} className="mr-1" /> Cost: ${task.actualCost}
+                                              </div>
+                                          )}
+                                      </div>
+                                  </div>
+                              ))}
+                              
+                              {getAssetHistory(selectedAsset.id).length === 0 && (
+                                  <div className="text-gray-400 text-sm italic py-4">
+                                      No completed service history recorded yet.
+                                  </div>
+                              )}
+                          </div>
+                      </div>
+                  </div>
+
+                  {/* Footer */}
+                  <div className="p-4 bg-gray-50 border-t border-gray-100 flex justify-end">
+                      <button 
+                          onClick={() => {
+                              if(confirm('Are you sure you want to delete this asset and its history?')) {
+                                  onDeleteAsset(selectedAsset.id);
+                                  setSelectedAsset(null);
+                              }
+                          }}
+                          className="text-red-600 hover:text-red-700 text-sm font-medium flex items-center px-4 py-2 hover:bg-red-50 rounded-lg transition"
+                      >
+                          <Trash2 size={16} className="mr-2" /> Delete Asset
+                      </button>
+                  </div>
               </div>
           </div>
       )}
@@ -585,6 +725,21 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
                     />
                   </div>
                 </div>
+                
+                {/* Financial Input */}
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wide mb-1">Purchase Price</label>
+                  <div className="relative">
+                      <DollarSign size={14} className="absolute left-2.5 top-3 text-gray-400" />
+                      <input 
+                        type="number" 
+                        value={purchasePrice}
+                        onChange={(e) => setPurchasePrice(e.target.value)}
+                        className="w-full rounded-md border-gray-300 bg-gray-50 p-2 pl-8 text-sm focus:ring-2 focus:ring-emerald-500 outline-none border"
+                        placeholder="0.00"
+                      />
+                  </div>
+                </div>
             </div>
 
             {/* AI Detected Results Section */}
@@ -683,7 +838,11 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
           </div>
         )}
         {assets.map(asset => (
-          <div key={asset.id} className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition relative group bg-white">
+          <div 
+            key={asset.id} 
+            onClick={() => setSelectedAsset(asset)}
+            className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition relative group bg-white cursor-pointer hover:border-emerald-300"
+          >
             <div className="flex items-start justify-between">
               <div className="flex items-center space-x-3">
                 <div className={`w-10 h-10 rounded-full flex items-center justify-center text-gray-500 overflow-hidden border border-gray-100 ${asset.category === AssetCategory.OTHER ? 'bg-indigo-50 text-indigo-500' : 'bg-gray-100'}`}>
@@ -698,23 +857,18 @@ const AssetManager: React.FC<AssetManagerProps> = ({ assets, onAddAsset, onAddTa
                   <p className="text-xs text-gray-500">{asset.brand === 'Custom Feature' ? 'Custom Feature' : `${asset.brand} ${asset.model}`}</p>
                 </div>
               </div>
-              <button onClick={() => onDeleteAsset(asset.id)} className="text-gray-300 hover:text-red-500 transition">
-                <Trash2 size={16} />
-              </button>
             </div>
             
-            <div className="mt-3 flex flex-wrap gap-2">
-                {asset.manual && (
-                  <div className="flex items-center text-[10px] text-gray-600 bg-gray-100 px-2 py-1 rounded">
-                    <FileText size={10} className="mr-1" />
-                    <span>PDF</span>
-                  </div>
-                )}
-                {asset.manualUrl && (
-                  <a href={asset.manualUrl} target="_blank" rel="noopener noreferrer" className="flex items-center text-[10px] text-emerald-700 bg-emerald-50 px-2 py-1 rounded hover:bg-emerald-100 transition border border-emerald-100">
-                    <ExternalLink size={10} className="mr-1" />
-                    <span>Official Manual</span>
-                  </a>
+            <div className="mt-3 flex justify-between items-end">
+                <div className="flex flex-wrap gap-2">
+                   <div className="text-[10px] text-gray-400 flex items-center">
+                       <History size={10} className="mr-1"/> History
+                   </div>
+                </div>
+                {asset.purchasePrice && (
+                    <div className="text-xs font-semibold text-slate-700 bg-slate-50 px-2 py-1 rounded border border-slate-100">
+                        ${asset.purchasePrice.toLocaleString()}
+                    </div>
                 )}
             </div>
           </div>

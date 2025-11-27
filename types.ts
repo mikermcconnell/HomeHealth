@@ -12,6 +12,8 @@ export enum AssetCategory {
   OTHER = 'Other'
 }
 
+export type TaskCategory = 'GENERAL' | 'SAFETY' | 'EXTERIOR' | 'INTERIOR' | 'SYSTEMS' | 'APPLIANCE' | 'PLUMBING' | 'OUTDOOR';
+
 export interface Asset {
   id: string;
   name: string;
@@ -22,6 +24,7 @@ export interface Asset {
   manual?: string; // Data URL or filename (uploaded)
   manualUrl?: string; // URL found via search
   purchaseDate?: string;
+  purchasePrice?: number; // New: Value tracking
 }
 
 export interface Task {
@@ -32,9 +35,12 @@ export interface Task {
   dueDate: string; // ISO Date string
   status: 'PENDING' | 'COMPLETED' | 'OVERDUE';
   priority: 'LOW' | 'MEDIUM' | 'HIGH';
+  category?: TaskCategory; // New: Categorization
   assetId?: string;
   recurring?: boolean;
   season?: string; // e.g., 'Late Fall', 'Late Spring'
+  actualCost?: number; // New: Cost tracking
+  completedDate?: string; // New: Historic tracking
 }
 
 export interface ImprovementProject {
